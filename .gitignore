@@ -1,0 +1,41 @@
+# ─── Regenerated / derived data — NOT committed ────────────────────────────
+# The 127 synthetic disk images (tens of GB) are rebuilt byte-deterministically
+# by the generators in src/generators/. Do not commit them.
+*.img
+*.dd
+*.raw
+*.iso
+*.bin
+dataset/
+
+# Carved output tree (6 tools x 134 images). Rebuilt by running the carvers.
+# The *scored* results are committed under eval/results/ instead.
+results/
+full_carved_output/
+
+# ─── Python ────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# ─── SCAR run artefacts ────────────────────────────────────────────────────
+*.map
+*.idx
+*.duplicate
+*.rejected
+*.objscan.pdf
+_c9_repairs.txt
+_work/
+*.log
+
+# ─── OS / editor ───────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
+*.tmp
+*.bak

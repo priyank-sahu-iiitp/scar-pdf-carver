@@ -1,0 +1,3 @@
+pyahocorasick
+pikepdf
+pymupdf

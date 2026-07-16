@@ -1,0 +1,4 @@
+pyahocorasick
+pikepdf
+pymupdf
+openpyxl

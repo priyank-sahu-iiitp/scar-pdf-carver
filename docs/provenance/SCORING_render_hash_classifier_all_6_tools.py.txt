@@ -1,0 +1,445 @@
+#!/usr/bin/env python3
+"""
+score_corpus.py -- populate the evaluation table from
+D:\\repo\\SCAR\\results\\full_carved_output (6 tools x N images) against
+ground truth, using a three-tier hash cascade:
+
+  Tier          Hash                What's hashed                   Purpose
+  1 File hash   SHA-256              raw carved PDF bytes             byte-identical -> strict FAITHFUL
+  2 Render-hash MD5 per page         page.get_pixmap(dpi=72).samples  primary check: content-faithful even
+                                                                       if bytes changed (carvers re-serialize;
+                                                                       pixels survive, file SHA rarely does)
+  3 Text-hash   SHA-256              concatenated page.get_text(),    secondary signal for PARTIAL credit when
+                                      joined with a form-feed          the render doesn't fully match
+
+Classification:
+  FAITHFUL  = file SHA-256 matches ground truth, OR the full per-page
+              render-hash tuple matches ground truth's tuple.
+  PARTIAL   = the carved file's rendered pages are a (order-preserving)
+              subsequence of a ground-truth document's pages, OR the
+              text-hash matches but the render doesn't.
+  DUPLICATE = matches the SAME ground-truth document as an already-better
+              (or equal, first-seen) candidate. Kept separate from
+              FALSE_ACC on purpose: a redundant-but-correct reconstruction
+              (e.g. Cohen's un-deduped candidates from ambiguous xref
+              matches) is a completely different failure mode from a
+              fabricated/wrong one, and conflating them punishes tools
+              that simply don't run a dedup pass rather than tools that
+              are actually wrong.
+  FALSE_ACC = renders fine, but matches no ground-truth document at all.
+  JUNK      = doesn't render at all.
+
+  Recall_%  = Faithful / GT_docs * 100
+  FA_rate_% = False_accept / (Faithful + Partial + False_accept) * 100
+  (Both formulas reverse-engineered from and verified against the prior
+  evaluation workbook -- see PAPER_TRUTH_NOTES.md section 8.)
+
+The one exception -- DFRWS: there are no ground-truth source PDFs at all
+(Cohen's 2007 challenge never released them, only a published MD5 answer
+key), so that corpus alone is scored by exact MD5 of the whole carved file
+against the published hash list. No render-hash tier is possible there.
+
+This is evaluation-only code (kept out of src\\SCAR on purpose -- SCAR must
+stay ground-truth-blind for use on real, unknown evidence).
+
+Usage:
+  py score_corpus.py --results D:\\repo\\SCAR\\results\\full_carved_output ^
+                      --dataset D:\\repo\\SCAR\\dataset ^
+                      --ground-truth D:\\repo\\SCAR\\ground_truth ^
+                      --out scored_results.csv [--image <one image id, for testing>]
+"""
+import argparse
+import csv
+import glob
+import hashlib
+import os
+import re
+
+import fitz  # PyMuPDF
+
+TOOLS = ("scar", "cohen", "chen", "foremost", "scalpel", "photorec")
+
+
+# ---- hashing ----------------------------------------------------------------
+
+def sha256_file(path):
+    h = hashlib.sha256()
+    with open(path, 'rb') as fd:
+        for chunk in iter(lambda: fd.read(1 << 20), b''):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def md5_file(path):
+    h = hashlib.md5()
+    with open(path, 'rb') as fd:
+        for chunk in iter(lambda: fd.read(1 << 20), b''):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def render_signature(path):
+    """Return (page_hashes: tuple[str,...], text_hash: str), or None if the
+    file doesn't render at all (JUNK)."""
+    try:
+        doc = fitz.open(path)
+        page_hashes = []
+        texts = []
+        for page in doc:
+            pix = page.get_pixmap(dpi=72)
+            page_hashes.append(hashlib.md5(pix.samples).hexdigest())
+            texts.append(page.get_text("text"))
+        doc.close()
+    except Exception:
+        return None
+    if not page_hashes:
+        return None
+    text_hash = hashlib.sha256("\f".join(texts).encode("utf-8", errors="replace")).hexdigest()
+    return tuple(page_hashes), text_hash
+
+
+def is_subsequence(sub, full):
+    """True if every element of `sub` appears in `full`, in order (not
+    necessarily contiguous) -- i.e. `sub`'s pages are a subset/subsequence
+    of `full`'s pages, preserving page order."""
+    if not sub:
+        return False
+    it = iter(full)
+    return all(x in it for x in sub)
+
+
+# ---- ground-truth precompute ------------------------------------------------
+
+def build_gt_entries(candidates):
+    """candidates: {name: bytes}. Returns list of
+    (name, sha256, page_hashes_or_None, text_hash_or_None)."""
+    entries = []
+    for name, data in candidates.items():
+        sha = hashlib.sha256(data).hexdigest()
+        # Render ground truth from bytes via a temp-free BytesIO stream open
+        try:
+            doc = fitz.open(stream=data, filetype="pdf")
+            page_hashes = []
+            texts = []
+            for page in doc:
+                pix = page.get_pixmap(dpi=72)
+                page_hashes.append(hashlib.md5(pix.samples).hexdigest())
+                texts.append(page.get_text("text"))
+            doc.close()
+            if page_hashes:
+                text_hash = hashlib.sha256(
+                    "\f".join(texts).encode("utf-8", errors="replace")).hexdigest()
+                entries.append((name, sha, tuple(page_hashes), text_hash))
+            else:
+                entries.append((name, sha, None, None))
+        except Exception:
+            entries.append((name, sha, None, None))
+    return entries
+
+
+# ---- per-candidate matching (bytes/render mode) -----------------------------
+
+def match_candidate(cand_sha, cand_sig, gt_entries):
+    """Returns (gt_index, tier) or (None, None).
+    tier in ('exact', 'render', 'subset', 'text')."""
+    for i, (_name, sha, _ph, _th) in enumerate(gt_entries):
+        if cand_sha == sha:
+            return i, 'exact'
+    if cand_sig is None:
+        return None, None
+    cand_pages, cand_text_hash = cand_sig
+    for i, (_name, _sha, ph, _th) in enumerate(gt_entries):
+        if ph is not None and cand_pages == ph:
+            return i, 'render'
+    for i, (_name, _sha, ph, _th) in enumerate(gt_entries):
+        if ph is not None and is_subsequence(cand_pages, ph):
+            return i, 'subset'
+    for i, (_name, _sha, _ph, th) in enumerate(gt_entries):
+        if th is not None and cand_text_hash == th:
+            return i, 'text'
+    return None, None
+
+
+_TIER_RANK = {'exact': 0, 'render': 1, 'subset': 2, 'text': 3}
+
+
+def score_tool_bytes_mode(gt_entries, tool_paths):
+    """Ground truth has real bytes to render against. Returns
+    (faithful, partial, duplicate, false_accept, junk, gt_docs)."""
+    gt_docs = len(gt_entries)
+    assignments = {}   # gt_index -> list of (path, tier)
+    unmatched = []     # (path, rendered_ok: bool)
+
+    for path in tool_paths:
+        try:
+            cand_sha = sha256_file(path)
+        except OSError:
+            continue
+        cand_sig = render_signature(path)
+        gi, tier = match_candidate(cand_sha, cand_sig, gt_entries)
+        if gi is not None:
+            assignments.setdefault(gi, []).append((path, tier))
+        else:
+            unmatched.append((path, cand_sig is not None))
+
+    faithful = partial = duplicate = 0
+    for gi, matches in assignments.items():
+        matches.sort(key=lambda m: _TIER_RANK[m[1]])
+        best_tier = matches[0][1]
+        if best_tier in ('exact', 'render'):
+            faithful += 1
+        else:
+            partial += 1
+        duplicate += len(matches) - 1
+
+    false_accept = sum(1 for _p, rendered in unmatched if rendered)
+    junk = sum(1 for _p, rendered in unmatched if not rendered)
+
+    return faithful, partial, duplicate, false_accept, junk, gt_docs
+
+
+# ---- DFRWS: MD5-only mode (no ground-truth bytes available) -----------------
+
+def score_tool_md5_mode(md5_entries, tool_paths):
+    gt_docs = len(md5_entries)
+    target_md5s = {md5 for _name, _size, md5 in md5_entries}
+
+    assignments = {}  # md5 -> list of paths
+    unmatched = []    # (path, rendered_ok)
+
+    for path in tool_paths:
+        try:
+            md5 = md5_file(path)
+        except OSError:
+            continue
+        if md5 in target_md5s:
+            assignments.setdefault(md5, []).append(path)
+        else:
+            sig = render_signature(path)
+            unmatched.append((path, sig is not None))
+
+    faithful = sum(1 for _md5, paths in assignments.items() if paths)
+    duplicate = sum(max(0, len(paths) - 1) for paths in assignments.values())
+    partial = 0  # not computable without ground-truth bytes (no render/text tiers possible)
+
+    false_accept = sum(1 for _p, rendered in unmatched if rendered)
+    junk = sum(1 for _p, rendered in unmatched if not rendered)
+
+    return faithful, partial, duplicate, false_accept, junk, gt_docs
+
+
+# ---- per-tool candidate extraction ------------------------------------------
+
+def list_tool_candidates(image_dir, tool):
+    d = os.path.join(image_dir, tool)
+    if not os.path.isdir(d):
+        return []
+    if tool == "scar":
+        return glob.glob(os.path.join(d, "fragmentcarve", "*.pdf"))
+    if tool in ("cohen", "chen"):
+        return glob.glob(os.path.join(d, "*.pdf"))
+    if tool == "foremost":
+        return glob.glob(os.path.join(d, "pdf", "*.pdf")) + glob.glob(os.path.join(d, "pdf", "*.PDF"))
+    if tool == "scalpel":
+        return (glob.glob(os.path.join(d, "pdf-*", "*.pdf"))
+                + glob.glob(os.path.join(d, "pdf-*", "*.PDF")))
+    if tool == "photorec":
+        return (glob.glob(os.path.join(d, "recup_dir*", "*.pdf"))
+                + glob.glob(os.path.join(d, "recup_dir*", "*.PDF")))
+    raise ValueError(tool)
+
+
+# ---- ground-truth resolution -----------------------------------------------
+
+GT_ROOT_MAP = [
+    (re.compile(r'^C1-'), 'manifest', 'C1 pdfs'),
+    (re.compile(r'^C2-'), 'manifest', 'C2 pdfs'),
+    (re.compile(r'^SYN-'), 'manifest', '24 image pdfs'),
+    (re.compile(r'^(SEQF|NSQF|MISS|NEST|BRAID)_f\d+$'), 'manifest', '95 FRAG pdfs'),
+    (re.compile(r'^L\d_Documents$'), 'folder', 'L0-L5 pdf'),
+    (re.compile(r'^dfrws-2007-challenge$'), 'md5list', 'DFRWS never realease their pdf only MD5 hash avail'),
+]
+
+
+def classify_image(image_id):
+    for pattern, mode, gt_subdir in GT_ROOT_MAP:
+        if pattern.match(image_id):
+            return mode, gt_subdir
+    return None, None
+
+
+def load_manifest_candidates(image_id, dataset_dir, gt_dir):
+    manifest_path = os.path.join(dataset_dir, image_id + "_manifest.csv")
+    names = set()
+    if os.path.exists(manifest_path):
+        with open(manifest_path, newline='') as fd:
+            reader = csv.DictReader(fd)
+            name_col = next((c for c in ("fat_entry_name", "pdf_name")
+                             if c in (reader.fieldnames or [])), None)
+            if name_col:
+                for row in reader:
+                    nm = row.get(name_col)
+                    if nm:
+                        names.add(nm)
+    candidates = {}
+    for path in sorted(glob.glob(os.path.join(gt_dir, "*.pdf"))):
+        base = os.path.basename(path)
+        if names and base not in names:
+            continue
+        with open(path, 'rb') as fd:
+            candidates[base] = fd.read()
+    return candidates
+
+
+def load_folder_candidates(gt_dir):
+    candidates = {}
+    for path in sorted(glob.glob(os.path.join(gt_dir, "*.pdf"))):
+        with open(path, 'rb') as fd:
+            candidates[os.path.basename(path)] = fd.read()
+    return candidates
+
+
+def load_md5list(gt_dir):
+    detail = os.path.join(gt_dir, "Detail.txt")
+    entries = []
+    with open(detail) as fd:
+        for line in fd:
+            line = line.strip()
+            if not line:
+                continue
+            parts = line.split(',')
+            if len(parts) != 4:
+                continue
+            _orig, realname, size, md5 = parts
+            entries.append((realname, int(size), md5.lower()))
+    return entries
+
+
+# ---- per-image worker (self-contained, for parallel execution) --------------
+
+def score_one_image(task):
+    """Score all 6 tools for one image. `task` is a dict with keys
+    image_dir, dataset_dir, ground_truth_dir. Returns a list of row dicts.
+    Self-contained (loads its own ground truth) so it can run in a separate
+    process -- each worker renders its own ground-truth and candidate PDFs
+    with its own fitz instance, no shared state."""
+    image_dir = task["image_dir"]
+    dataset_dir = task["dataset_dir"]
+    ground_truth_dir = task["ground_truth_dir"]
+    image_id = os.path.basename(image_dir)
+
+    mode, gt_subdir = classify_image(image_id)
+    if mode is None:
+        return image_id, None, []   # signal "skipped"
+    gt_dir = os.path.join(ground_truth_dir, gt_subdir)
+
+    if mode == "manifest":
+        candidates = load_manifest_candidates(image_id, dataset_dir, gt_dir)
+        gt_entries = build_gt_entries(candidates)
+        score_fn = lambda paths: score_tool_bytes_mode(gt_entries, paths)
+    elif mode == "folder":
+        candidates = load_folder_candidates(gt_dir)
+        gt_entries = build_gt_entries(candidates)
+        score_fn = lambda paths: score_tool_bytes_mode(gt_entries, paths)
+    elif mode == "md5list":
+        md5_entries = load_md5list(gt_dir)
+        score_fn = lambda paths: score_tool_md5_mode(md5_entries, paths)
+    else:
+        return image_id, None, []
+
+    rows = []
+    for tool in TOOLS:
+        paths = list_tool_candidates(image_dir, tool)
+        faithful, partial, duplicate, false_accept, junk, gt_docs = score_fn(paths)
+        recall = (faithful / gt_docs * 100.0) if gt_docs else 0.0
+        denom = faithful + partial + false_accept
+        fa_rate = (false_accept / denom * 100.0) if denom else 0.0
+        rows.append(dict(
+            Image=image_id, Tool=tool, GT_docs=gt_docs,
+            Faithful=faithful, Partial=partial, Duplicate=duplicate,
+            False_accept=false_accept, Junk=junk,
+            Recall_pct=round(recall, 1), FA_rate_pct=round(fa_rate, 1),
+            Candidates_seen=len(paths),
+        ))
+    return image_id, mode, rows
+
+
+# ---- main --------------------------------------------------------------------
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--results", required=True, help="full_carved_output root")
+    ap.add_argument("--dataset", required=True, help="dataset folder (manifests live here)")
+    ap.add_argument("--ground-truth", required=True, help="ground_truth folder")
+    ap.add_argument("--out", required=True, help="output CSV path")
+    ap.add_argument("--image", default=None, help="score only this one image_id (testing)")
+    ap.add_argument("--workers", type=int, default=0,
+                    help="parallel worker processes (0 = auto = cpu_count-1). "
+                         "Each image is scored independently in its own process.")
+    args = ap.parse_args()
+
+    image_dirs = sorted(
+        d for d in glob.glob(os.path.join(args.results, "*"))
+        if os.path.isdir(d)
+    )
+    if args.image:
+        image_dirs = [d for d in image_dirs if os.path.basename(d) == args.image]
+        if not image_dirs:
+            raise SystemExit("image not found under --results: %s" % args.image)
+
+    tasks = [dict(image_dir=d, dataset_dir=args.dataset,
+                  ground_truth_dir=args.ground_truth) for d in image_dirs]
+
+    if args.workers == 0:
+        workers = max(1, (os.cpu_count() or 2) - 1)
+    else:
+        workers = max(1, args.workers)
+    # No point spawning more workers than tasks, or a pool for a single image.
+    workers = min(workers, len(tasks))
+
+    rows = []
+    done = 0
+    total = len(tasks)
+
+    def handle(result):
+        nonlocal done
+        image_id, mode, image_rows = result
+        done += 1
+        if mode is None and not image_rows:
+            print("[%d/%d] SKIP %-24s (no ground-truth rule)" % (done, total, image_id))
+            return
+        rows.extend(image_rows)
+        for r in image_rows:
+            print("[%d/%d] %-24s %-10s GT=%-3d F=%-3d P=%-3d Dup=%-3d FA=%-3d Junk=%-3d "
+                  "Recall=%5.1f%% FArate=%5.1f%%"
+                  % (done, total, r["Image"], r["Tool"], r["GT_docs"], r["Faithful"],
+                     r["Partial"], r["Duplicate"], r["False_accept"], r["Junk"],
+                     r["Recall_pct"], r["FA_rate_pct"]))
+
+    if workers <= 1:
+        for task in tasks:
+            handle(score_one_image(task))
+    else:
+        import concurrent.futures as cf
+        print("scoring %d images with %d parallel workers...\n" % (total, workers))
+        with cf.ProcessPoolExecutor(max_workers=workers) as ex:
+            futures = [ex.submit(score_one_image, t) for t in tasks]
+            for fut in cf.as_completed(futures):
+                handle(fut.result())
+
+    # Stable ordering in the CSV regardless of completion order
+    tool_order = {t: i for i, t in enumerate(TOOLS)}
+    rows.sort(key=lambda r: (r["Image"], tool_order.get(r["Tool"], 99)))
+
+    cols = ["Image", "Tool", "GT_docs", "Faithful", "Partial", "Duplicate",
+            "False_accept", "Junk", "Recall_pct", "FA_rate_pct", "Candidates_seen"]
+    with open(args.out, 'w', newline='') as fd:
+        w = csv.DictWriter(fd, fieldnames=cols)
+        w.writeheader()
+        w.writerows(rows)
+    print("\n%d rows -> %s" % (len(rows), args.out))
+
+
+if __name__ == "__main__":
+    main()

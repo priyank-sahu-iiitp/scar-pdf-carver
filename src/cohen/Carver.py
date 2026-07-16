@@ -1,0 +1,87 @@
+import bisect
+
+
+class Reassembler:
+    interpolate_forward = True
+    overread = 100 * 1024
+
+    def __init__(self, fd):
+        self.fd = fd
+        self.points = []
+        self.mapping = {}
+        self.readptr = 0
+
+    def del_point(self, file_pos):
+        try:
+            idx = self.points.index(file_pos)
+            del self.mapping[file_pos]
+            self.points.pop(idx)
+        except (ValueError, KeyError):
+            pass
+
+    def add_point(self, file_pos, image_pos):
+        bisect.insort_left(self.points, file_pos)
+        if file_pos in self.mapping:
+            expected, left = self.interpolate(file_pos - 1)
+            if abs(image_pos - expected) > abs(self.mapping[file_pos] - expected):
+                return
+        self.mapping[file_pos] = image_pos
+
+    def seek(self, offset, whence=0):
+        if whence == 0:
+            self.readptr = offset
+        elif whence == 1:
+            self.readptr += offset
+
+    def interpolate(self, file_offset, direction_forward=None):
+        if direction_forward is None:
+            direction_forward = self.interpolate_forward
+        if file_offset < self.points[0]:
+            direction_forward = False
+        elif file_offset > self.points[-1]:
+            direction_forward = True
+        if direction_forward:
+            l = bisect.bisect_right(self.points, file_offset) - 1
+            try:
+                left = self.points[l + 1] - file_offset
+            except IndexError:
+                left = self.overread
+            return (self.mapping[self.points[l]] + file_offset - self.points[l]), left
+        else:
+            r = bisect.bisect_right(self.points, file_offset)
+            return (self.mapping[self.points[r]] - (self.points[r] - file_offset),
+                    self.points[r] - file_offset)
+
+    def tell(self):
+        return self.readptr
+
+    def read(self, length):
+        result = b''
+        while length > 0:
+            try:
+                m, left = self.interpolate(self.readptr)
+                self.fd.seek(m, 0)
+            except Exception:
+                left = 1000
+            want_to_read = min(left, length)
+            if want_to_read <= 0:
+                self.readptr += 1
+                length -= 1
+                continue
+            data = self.fd.read(want_to_read)
+            if not data:
+                break
+            self.readptr += min(left, length)
+            result += data
+            length -= len(data)
+        return result
+
+    def load_map(self, mapfile):
+        with open(mapfile, 'r') as fd:
+            for line in fd:
+                if line.startswith("#"):
+                    continue
+                parts = line.split(" ", 2)
+                if len(parts) < 2:
+                    continue
+                self.add_point(int(parts[0]), int(parts[1]))

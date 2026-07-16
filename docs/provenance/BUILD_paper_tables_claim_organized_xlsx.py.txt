@@ -1,0 +1,372 @@
+#!/usr/bin/env python3
+"""
+build_paper_tables.py -- claim-organized evaluation workbook.
+
+Unlike build_excel.py (which dumps results per corpus), this organizes tables
+by WHAT EACH CORPUS PROVES, matching the paper's argument:
+
+  T0  Overview        one line per corpus: role + what it demonstrates
+  T1  Contribution1   C1: recall per tool x fragmentation scenario
+  T1b CapabilityGap   C1: recall by xref encoding (classic vs Cohen-blind xref-stream)
+  T2  Contribution2   C2: recall per tool x gap size
+  T2b RepairAblation  C2: SCAR repair OFF vs ON per gap (the C2 gain)
+  T3  Eval_Breadth    SYN-24: recall per tool x fragmentation type
+  T4  Depth_vs_Frags  95-sweep: recall per tool x fragment count N=2..20
+  T5  NIST_Reference  L0-L5 (NIST CFReDS): recall per tool x fragmentation level
+  T6  DFRWS_Real      DFRWS 2007 challenge: MD5-exact/13 per tool
+  Definitions         category + metric definitions
+  All_Images_Raw      full per-image per-tool table (audit trail)
+
+Inputs:
+  --scored     scored_results_render_hash.csv   (main per-image data; required)
+  --ablation   c2_repair_ablation.csv           (optional; enables T2b)
+  --capgap     c1_capability_gap.csv            (optional; enables T1b)
+
+Usage:
+  py build_paper_tables.py --scored ...\\scored_results_render_hash.csv ^
+      --ablation ...\\c2_repair_ablation.csv --capgap ...\\c1_capability_gap.csv ^
+      --out ...\\Paper_Tables.xlsx
+"""
+import argparse
+import csv
+import os
+import re
+
+import openpyxl
+from openpyxl.styles import Font, Alignment
+
+TOOLS = ("scar", "cohen", "chen", "foremost", "scalpel", "photorec")
+TOOL_ORDER = {t: i for i, t in enumerate(TOOLS)}
+
+CORPUS_RULES = [
+    (re.compile(r'^C1-'), 'C1'),
+    (re.compile(r'^C2-'), 'C2'),
+    (re.compile(r'^SYN-'), 'SYN-24'),
+    (re.compile(r'^(SEQF|NSQF|MISS|NEST|BRAID)_f\d+$'), '95-set'),
+    (re.compile(r'^L\d_Documents$'), 'L-series'),
+    (re.compile(r'^dfrws-2007-challenge$'), 'DFRWS'),
+]
+
+# fragmentation-scenario extraction
+C1_SCEN = {'C1-CONT': 'CONT', 'C1-BIFRAG': 'BIFRAG', 'C1-3FRAG': '3FRAG'}
+C2_GAP = {'C2-BIFRAG-gap1': 'gap1', 'C2-BIFRAG-gap8': 'gap8',
+          'C2-BIFRAG-gap64': 'gap64', 'C2-BIFRAG-gap512': 'gap512',
+          'C2-CONTROL-64MB': 'control'}
+
+
+def corpus_of(image_id):
+    for pat, name in CORPUS_RULES:
+        if pat.match(image_id):
+            return name
+    return "OTHER"
+
+
+def load_scored(path):
+    with open(path, newline='') as fd:
+        rows = list(csv.DictReader(fd))
+    for r in rows:
+        for k in ('GT_docs', 'Faithful', 'Partial', 'Duplicate',
+                  'False_accept', 'Junk', 'Candidates_seen'):
+            r[k] = int(r[k])
+    return rows
+
+
+def load_simple_csv(path):
+    if not path or not os.path.exists(path):
+        return None
+    with open(path, newline='') as fd:
+        return list(csv.DictReader(fd))
+
+
+def hdr(ws, headers):
+    ws.append(headers)
+    for c in ws[1]:
+        c.font = Font(bold=True)
+        c.alignment = Alignment(horizontal="center")
+    ws.freeze_panes = "A2"
+
+
+def note(ws, text, row=1):
+    """Put an italic note row above the table (call before hdr not used; we
+    instead append a note as first content). Simpler: prepend a merged title."""
+    ws.insert_rows(1)
+    ws.cell(row=1, column=1, value=text).font = Font(italic=True, size=10)
+
+
+def recall(faithful, gt):
+    return round(faithful / gt * 100.0, 1) if gt else 0.0
+
+
+def fa_rate(fa, faithful, partial):
+    d = faithful + partial + fa
+    return round(fa / d * 100.0, 1) if d else 0.0
+
+
+# ---- aggregate helper: sum over a set of images, per tool -------------------
+
+def agg_by(rows, image_filter, bucket_of):
+    """bucket_of(image_id)->label. Returns {(bucket,tool): dict of sums}."""
+    out = {}
+    for r in rows:
+        if not image_filter(r["Image"]):
+            continue
+        b = bucket_of(r["Image"])
+        if b is None:
+            continue
+        key = (b, r["Tool"])
+        a = out.setdefault(key, dict(GT_docs=0, Faithful=0, Partial=0,
+                                     Duplicate=0, False_accept=0, Junk=0))
+        for k in ("GT_docs", "Faithful", "Partial", "Duplicate", "False_accept", "Junk"):
+            a[k] += r[k]
+    return out
+
+
+def write_scenario_table(ws, rows, image_filter, bucket_of, bucket_order, title):
+    ws.append([title])
+    ws[1][0].font = Font(bold=True, size=11)
+    ws.append([])
+    header = ["Scenario", "Tool", "GT_docs", "Faithful", "Partial",
+              "Duplicate", "False_accept", "Junk", "Recall_%", "FA_rate_%"]
+    ws.append(header)
+    for c in ws[3]:
+        c.font = Font(bold=True)
+        c.alignment = Alignment(horizontal="center")
+    ws.freeze_panes = "A4"
+
+    agg = agg_by(rows, image_filter, bucket_of)
+    for b in bucket_order:
+        for tool in TOOLS:
+            if (b, tool) not in agg:
+                continue
+            a = agg[(b, tool)]
+            ws.append([b, tool, a["GT_docs"], a["Faithful"], a["Partial"],
+                       a["Duplicate"], a["False_accept"], a["Junk"],
+                       recall(a["Faithful"], a["GT_docs"]),
+                       fa_rate(a["False_accept"], a["Faithful"], a["Partial"])])
+    for i in range(len(header)):
+        ws.column_dimensions[chr(65 + i)].width = 13
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--scored", required=True)
+    ap.add_argument("--ablation", default=None)
+    ap.add_argument("--capgap", default=None)
+    ap.add_argument("--out", required=True)
+    args = ap.parse_args()
+
+    rows = load_scored(args.scored)
+    ablation = load_simple_csv(args.ablation)
+    capgap = load_simple_csv(args.capgap)
+
+    wb = openpyxl.Workbook()
+
+    # ---- T0 Overview -------------------------------------------------------
+    ws = wb.active
+    ws.title = "T0_Overview"
+    hdr(ws, ["Corpus", "Images", "Role in paper", "What it demonstrates"])
+    overview = [
+        ("C1", 3, "Contribution 1 (C1)",
+         "Decoding PDF 1.5+ compressed xref-streams / ObjStm that keyword carvers cannot read"),
+        ("C2", 5, "Contribution 2 (C2)",
+         "Anchored bi-fragment repair of FlateDecode streams split across a disk gap"),
+        ("SYN-24", 24, "Evaluation - breadth",
+         "Robustness across 6 fragmentation scenarios x 2 sizes x 2 fragment counts"),
+        ("95-set", 95, "Evaluation - depth",
+         "Recall vs fragment count N=2..20 across 5 scenarios (carving depth)"),
+        ("L-series", 6, "Reference dataset",
+         "NIST CFReDS official dataset, L0-L5 fragmentation levels (external benchmark)"),
+        ("DFRWS", 1, "Real challenge image",
+         "DFRWS 2007 challenge; scored by published MD5 answer key (no source PDFs released)"),
+    ]
+    for r in overview:
+        ws.append(list(r))
+    ws.column_dimensions["A"].width = 12
+    ws.column_dimensions["B"].width = 9
+    ws.column_dimensions["C"].width = 24
+    ws.column_dimensions["D"].width = 82
+
+    # ---- T1 Contribution 1: C1 by scenario --------------------------------
+    ws = wb.create_sheet("T1_Contribution1")
+    write_scenario_table(
+        ws, rows,
+        image_filter=lambda i: corpus_of(i) == "C1",
+        bucket_of=lambda i: C1_SCEN.get(i),
+        bucket_order=["CONT", "BIFRAG", "3FRAG"],
+        title="T1  Contribution 1 - xref-stream / ObjStm decoding (C1 corpus, 30 PDFs x 3 fragmentation levels)")
+
+    # ---- T1b Capability gap by encoding -----------------------------------
+    if capgap:
+        ws = wb.create_sheet("T1b_CapabilityGap")
+        ws.append(["T1b  C1 capability gap - recall by PDF cross-reference encoding"])
+        ws[1][0].font = Font(bold=True, size=11)
+        ws.append(["'Cohen-blind' = xref-stream PDFs a classic keyword carver cannot read; C1 recovers them."])
+        ws[2][0].font = Font(italic=True, size=10)
+        ws.append([])
+        hrow = ["Encoding", "Tool", "Recovered", "Total", "Recall_%"]
+        ws.append(hrow)
+        for c in ws[4]:
+            c.font = Font(bold=True)
+        ws.freeze_panes = "A5"
+        for r in capgap:
+            ws.append([r["Encoding"], r["Tool"], int(r["Recovered"]),
+                       int(r["Total"]), float(r["Recall_pct"])])
+        for i in range(len(hrow)):
+            ws.column_dimensions[chr(65 + i)].width = 30 if i == 0 else 12
+
+    # ---- T2 Contribution 2: C2 by gap -------------------------------------
+    ws = wb.create_sheet("T2_Contribution2")
+    write_scenario_table(
+        ws, rows,
+        image_filter=lambda i: corpus_of(i) == "C2",
+        bucket_of=lambda i: C2_GAP.get(i),
+        bucket_order=["gap1", "gap8", "gap64", "gap512", "control"],
+        title="T2  Contribution 2 - bi-fragment repair (C2 corpus, 20 PDFs x 5 gap sizes)")
+
+    # ---- T2b Repair ablation ----------------------------------------------
+    if ablation:
+        ws = wb.create_sheet("T2b_RepairAblation")
+        ws.append(["T2b  C2 anchored bi-fragment repair - ablation (SCAR only): repair OFF vs ON"])
+        ws[1][0].font = Font(bold=True, size=11)
+        ws.append(["C2_gain = documents recovered ONLY because bi-fragment repair was enabled."])
+        ws[2][0].font = Font(italic=True, size=10)
+        ws.append([])
+        hrow = ["Gap", "GT_docs", "Faithful_OFF", "Faithful_ON", "C2_gain",
+                "Recall_OFF_%", "Recall_ON_%"]
+        ws.append(hrow)
+        for c in ws[4]:
+            c.font = Font(bold=True)
+        ws.freeze_panes = "A5"
+        for r in ablation:
+            ws.append([r["Gap"], int(r["GT_docs"]), int(r["Faithful_OFF"]),
+                       int(r["Faithful_ON"]), int(r["C2_gain"]),
+                       float(r["Recall_OFF_pct"]), float(r["Recall_ON_pct"])])
+        for i in range(len(hrow)):
+            ws.column_dimensions[chr(65 + i)].width = 14
+
+    # ---- T3 Evaluation breadth: SYN-24 by scenario ------------------------
+    ws = wb.create_sheet("T3_Eval_Breadth")
+    def syn_scen(i):
+        m = re.match(r'^SYN-([A-Z]+)-', i)
+        return m.group(1) if m else None
+    write_scenario_table(
+        ws, rows,
+        image_filter=lambda i: corpus_of(i) == "SYN-24",
+        bucket_of=syn_scen,
+        bucket_order=["CONT", "SEQF", "NSQF", "MISS", "NEST", "BRAID"],
+        title="T3  Evaluation breadth - SYN-24 corpus, recall by fragmentation scenario")
+
+    # ---- T4 Depth vs fragment count: 95-sweep by N ------------------------
+    ws = wb.create_sheet("T4_Depth_vs_Frags")
+    ws.append(["T4  Carving depth - 95-sweep corpus, recall by fragment count N (all scenarios pooled)"])
+    ws[1][0].font = Font(bold=True, size=11)
+    ws.append([])
+    hrow = ["N_fragments"] + list(TOOLS)
+    ws.append(hrow)
+    for c in ws[3]:
+        c.font = Font(bold=True)
+        c.alignment = Alignment(horizontal="center")
+    ws.freeze_panes = "A4"
+
+    def n_of(i):
+        m = re.match(r'^[A-Z]+_f(\d+)$', i)
+        return int(m.group(1)) if m else None
+    agg = {}
+    for r in rows:
+        if corpus_of(r["Image"]) != "95-set":
+            continue
+        n = n_of(r["Image"])
+        if n is None:
+            continue
+        key = (n, r["Tool"])
+        a = agg.setdefault(key, dict(GT_docs=0, Faithful=0))
+        a["GT_docs"] += r["GT_docs"]
+        a["Faithful"] += r["Faithful"]
+    ns = sorted({k[0] for k in agg})
+    for n in ns:
+        line = [n]
+        for tool in TOOLS:
+            a = agg.get((n, tool))
+            line.append(recall(a["Faithful"], a["GT_docs"]) if a else "")
+        ws.append(line)
+    for i in range(len(hrow)):
+        ws.column_dimensions[chr(65 + i)].width = 12
+
+    # ---- T5 NIST reference: L-series by level -----------------------------
+    ws = wb.create_sheet("T5_NIST_Reference")
+    write_scenario_table(
+        ws, rows,
+        image_filter=lambda i: corpus_of(i) == "L-series",
+        bucket_of=lambda i: i.replace("_Documents", ""),   # L0..L5
+        bucket_order=["L0", "L1", "L2", "L3", "L4", "L5"],
+        title="T5  NIST CFReDS reference (external) - L0-L5 fragmentation levels")
+
+    # ---- T6 DFRWS real ----------------------------------------------------
+    ws = wb.create_sheet("T6_DFRWS_Real")
+    ws.append(["T6  DFRWS 2007 challenge image - MD5-exact recovery vs published answer key (13 documents)"])
+    ws[1][0].font = Font(bold=True, size=11)
+    ws.append(["Scored by exact whole-file MD5 (no source PDFs were released), so Faithful here = MD5-exact match."])
+    ws[2][0].font = Font(italic=True, size=10)
+    ws.append([])
+    hrow = ["Tool", "MD5_exact_/13", "False_accept", "Junk", "Recall_%"]
+    ws.append(hrow)
+    for c in ws[4]:
+        c.font = Font(bold=True)
+    ws.freeze_panes = "A5"
+    dfrws = [r for r in rows if r["Image"] == "dfrws-2007-challenge"]
+    dfrws.sort(key=lambda r: TOOL_ORDER.get(r["Tool"], 99))
+    for r in dfrws:
+        ws.append([r["Tool"], r["Faithful"], r["False_accept"], r["Junk"],
+                   recall(r["Faithful"], r["GT_docs"])])
+    for i in range(len(hrow)):
+        ws.column_dimensions[chr(65 + i)].width = 15
+
+    # ---- Definitions ------------------------------------------------------
+    ws = wb.create_sheet("Definitions")
+    hdr(ws, ["Term", "Definition"])
+    defs = [
+        ("Faithful", "File SHA-256 matches ground truth, OR full per-page render-hash "
+                     "(MD5 of each page's dpi=72 pixel buffer) matches. Content-faithful."),
+        ("Partial", "Rendered pages are an ordered subset of a ground-truth document, OR "
+                    "extracted-text hash matches but render does not."),
+        ("Duplicate", "Matches the SAME ground-truth document as an already-counted "
+                      "better/equal candidate (redundant-but-correct; e.g. un-deduped "
+                      "candidates). Kept separate from False_accept."),
+        ("False_accept", "Renders as a valid PDF but matches no ground-truth document."),
+        ("Junk", "Does not render as a valid PDF."),
+        ("Recall_%", "Faithful / GT_docs * 100."),
+        ("FA_rate_%", "False_accept / (Faithful + Partial + False_accept) * 100."),
+        ("DFRWS note", "MD5-exact only (no source PDFs released), so Partial not computable there."),
+        ("95-set note", "Ground truth = fragmented target(s) only (role=target/secondary); "
+                        "the 38 contiguous distractors per image are excluded (a recovered "
+                        "distractor is real, so not a false accept, but not the research target)."),
+        ("Computed by", "eval/score_corpus.py (+ score_c1_by_encoding.py, score_c2_ablation.py). "
+                        "Same definitions applied identically to all six tools."),
+    ]
+    for t, d in defs:
+        ws.append([t, d])
+    ws.column_dimensions["A"].width = 18
+    ws.column_dimensions["B"].width = 95
+
+    # ---- All_Images_Raw ---------------------------------------------------
+    ws = wb.create_sheet("All_Images_Raw")
+    cols = ["Corpus", "Image", "Tool", "GT_docs", "Faithful", "Partial",
+            "Duplicate", "False_accept", "Junk", "Recall_pct", "FA_rate_pct",
+            "Candidates_seen"]
+    hdr(ws, cols)
+    srt = sorted(rows, key=lambda r: (corpus_of(r["Image"]), r["Image"],
+                                      TOOL_ORDER.get(r["Tool"], 99)))
+    for r in srt:
+        ws.append([corpus_of(r["Image"]), r["Image"], r["Tool"], r["GT_docs"],
+                   r["Faithful"], r["Partial"], r["Duplicate"], r["False_accept"],
+                   r["Junk"], r["Recall_pct"], r["FA_rate_pct"], r["Candidates_seen"]])
+
+    wb.save(args.out)
+    print("wrote %s (%d sheets)" % (args.out, len(wb.sheetnames)))
+    for s in wb.sheetnames:
+        print("  -", s)
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,48 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environments
+venv/
+env/
+.env/
+.venv/
+
+# SCAR output files
+carved_pdfs/
+*.map
+*.idx
+*.duplicate
+*.rejected
+*.objscan.pdf
+_c9_repairs.txt
+
+# Disk images (large binary files — do not commit)
+*.dd
+*.img
+*.raw
+*.iso
+*.bin
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE / editor
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# Logs and temp
+*.log
+*.tmp
+*.bak

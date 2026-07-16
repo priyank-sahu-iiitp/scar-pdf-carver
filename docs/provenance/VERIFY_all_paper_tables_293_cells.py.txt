@@ -1,0 +1,267 @@
+#!/usr/bin/env python3
+"""
+verify_all_tables.py -- recompute every results table in the paper from the
+raw scored data and diff against what the .docx actually prints. For all six
+tools, not just SCAR. Prints one PASS/FAIL line per checked cell group.
+
+Sources of truth:
+  scored_results_render_hash.csv   -> Tables 3,5,7,9,10 (per-image aggregate)
+  per_document_recovery.csv        -> Table 8 (depth), and an independent
+                                      recomputation of Table 4 and Table 11
+  c1_capability_gap.csv            -> Table 4 (primary)
+  c2_repair_ablation.csv           -> Table 6
+  mcnemar_results.csv              -> Table 11
+"""
+import csv
+import re
+from collections import defaultdict
+
+EV = r"<repo>\evaluation"
+TOOLS = ["scar", "cohen", "chen", "foremost", "scalpel", "photorec"]
+
+scored = list(csv.DictReader(open(EV + r"\scored_results_render_hash.csv")))
+perdoc = list(csv.DictReader(open(EV + r"\per_document_recovery.csv")))
+for r in scored:
+    for k in ("GT_docs", "Faithful", "Partial", "Duplicate", "False_accept", "Junk"):
+        r[k] = int(r[k])
+
+_fail = [0]
+
+
+def _norm(x):
+    """Normalise a scalar or tuple so 90 == 90.0 for comparison."""
+    if isinstance(x, (tuple, list)):
+        return tuple(_norm(v) for v in x)
+    try:
+        return round(float(x), 4)
+    except (TypeError, ValueError):
+        return x
+
+
+def check(label, got, want):
+    ok = (_norm(got) == _norm(want))
+    if not ok:
+        _fail[0] += 1
+    print(("  PASS " if ok else "  FAIL ") + "%-52s got=%s want=%s"
+          % (label, got, want))
+
+
+def recall(f, g):
+    return round(f / g * 100, 1) if g else 0.0
+
+
+def fa_rate(fa, f, p):
+    d = f + p + fa
+    return round(fa / d * 100, 1) if d else 0.0
+
+
+def agg(images_pred, bucket):
+    """bucket(image)->label; returns {(label,tool): dict of summed counts}."""
+    out = defaultdict(lambda: defaultdict(int))
+    for r in scored:
+        if not images_pred(r["Image"]):
+            continue
+        b = bucket(r["Image"])
+        if b is None:
+            continue
+        key = (b, r["Tool"])
+        for k in ("GT_docs", "Faithful", "Partial", "Duplicate", "False_accept", "Junk"):
+            out[key][k] += r[k]
+    return out
+
+
+print("=" * 70)
+print("TABLE 3  (C1 by fragmentation condition)  -- Faithful/Partial/Dup/FA/Junk/Recall")
+print("=" * 70)
+C1SCEN = {"C1-CONT": "CONT", "C1-BIFRAG": "BIFRAG", "C1-3FRAG": "3FRAG"}
+a = agg(lambda i: i in C1SCEN, lambda i: C1SCEN.get(i))
+# expected values as printed in the docx (Table 3)
+T3 = {
+ ("CONT","scar"):(29,0,14,0,0,96.7),("CONT","cohen"):(13,1,30,4,0,43.3),
+ ("CONT","chen"):(29,0,1,0,0,96.7),("CONT","foremost"):(29,0,31,0,0,96.7),
+ ("CONT","scalpel"):(19,0,19,0,22,63.3),("CONT","photorec"):(29,0,91,0,0,96.7),
+ ("BIFRAG","scar"):(25,4,25,2,0,83.3),("BIFRAG","cohen"):(9,4,23,10,0,30.0),
+ ("BIFRAG","chen"):(5,7,1,4,0,16.7),("BIFRAG","foremost"):(2,4,6,0,0,6.7),
+ ("BIFRAG","scalpel"):(4,14,18,2,22,13.3),("BIFRAG","photorec"):(2,4,18,0,0,6.7),
+ ("3FRAG","scar"):(18,9,20,5,1,60.0),("3FRAG","cohen"):(6,3,14,17,3,20.0),
+ ("3FRAG","chen"):(4,5,1,6,1,13.3),("3FRAG","foremost"):(2,2,4,4,0,6.7),
+ ("3FRAG","scalpel"):(2,13,15,6,24,6.7),("3FRAG","photorec"):(2,2,12,8,0,6.7),
+}
+for (scen, tool), want in T3.items():
+    d = a[(scen, tool)]
+    got = (d["Faithful"], d["Partial"], d["Duplicate"], d["False_accept"],
+           d["Junk"], recall(d["Faithful"], d["GT_docs"]))
+    check("T3 %-7s %-9s" % (scen, tool), got, want)
+
+print("=" * 70)
+print("TABLE 4  (C1 capability gap by encoding)  -- two independent sources")
+print("=" * 70)
+# source A: c1_capability_gap.csv
+capgap = {(r["Encoding"], r["Tool"]): (int(r["Recovered"]), int(r["Total"]))
+          for r in csv.DictReader(open(EV + r"\c1_capability_gap.csv"))}
+# source B: recompute from per_document_recovery.csv + classifier labels
+enc = {}
+for r in csv.DictReader(open(r"<repo>\src\generators\c1_classification.csv")):
+    l = r["label"].lower()
+    g = ("xref-stream (Cohen-blind)" if ("cohen-blind" in l or "xref-stream" in l)
+         else "hybrid (Cohen-readable)" if "hybrid" in l
+         else "classic table (Cohen-readable)" if "classic" in l else "unknown")
+    enc[r["file"]] = g
+recompute = defaultdict(lambda: defaultdict(lambda: [0, 0]))
+for r in perdoc:
+    if r["Corpus"] != "C1":
+        continue
+    g = enc.get(r["Document"], "unknown")
+    recompute[g][r["Tool"]][0] += int(r["Recovered"])
+    recompute[g][r["Tool"]][1] += 1
+# printed Table 4 values (recovered of total)
+T4 = {
+ ("classic table (Cohen-readable)","scar"):(18,27),("classic table (Cohen-readable)","cohen"):(15,27),
+ ("classic table (Cohen-readable)","chen"):(11,27),("classic table (Cohen-readable)","foremost"):(9,27),
+ ("classic table (Cohen-readable)","scalpel"):(0,27),("classic table (Cohen-readable)","photorec"):(9,27),
+ ("hybrid (Cohen-readable)","scar"):(24,24),("hybrid (Cohen-readable)","cohen"):(14,24),
+ ("hybrid (Cohen-readable)","chen"):(15,24),("hybrid (Cohen-readable)","foremost"):(12,24),
+ ("hybrid (Cohen-readable)","scalpel"):(10,24),("hybrid (Cohen-readable)","photorec"):(12,24),
+ ("xref-stream (Cohen-blind)","scar"):(31,39),("xref-stream (Cohen-blind)","cohen"):(0,39),
+ ("xref-stream (Cohen-blind)","chen"):(13,39),("xref-stream (Cohen-blind)","foremost"):(13,39),
+ ("xref-stream (Cohen-blind)","scalpel"):(15,39),("xref-stream (Cohen-blind)","photorec"):(13,39),
+}
+for key, want in T4.items():
+    src_a = capgap.get(key)
+    src_b = tuple(recompute[key[0]][key[1]])
+    check("T4 %-32s %-9s csv" % key, src_a, want)
+    check("T4 %-32s %-9s perdoc" % key, src_b, want)
+
+print("=" * 70)
+print("TABLE 4a (classic-table by condition, recovered/9)  -- from per-document")
+print("=" * 70)
+classic = {r["file"] for r in csv.DictReader(open(r"<repo>\src\generators\c1_classification.csv"))
+           if "classic" in r["label"].lower()}
+cond = {"C1-CONT": "CONT", "C1-BIFRAG": "BIFRAG", "C1-3FRAG": "3FRAG"}
+t4a = defaultdict(lambda: defaultdict(int))
+for r in perdoc:
+    if r["Corpus"] != "C1" or r["Document"] not in classic:
+        continue
+    t4a[(cond[r["Image"]], r["Tool"])]["rec"] += int(r["Recovered"])
+T4A = {
+ ("CONT","scar"):9,("CONT","cohen"):9,("CONT","chen"):9,("CONT","foremost"):9,("CONT","scalpel"):0,("CONT","photorec"):9,
+ ("BIFRAG","scar"):5,("BIFRAG","cohen"):4,("BIFRAG","chen"):1,("BIFRAG","foremost"):0,("BIFRAG","scalpel"):0,("BIFRAG","photorec"):0,
+ ("3FRAG","scar"):4,("3FRAG","cohen"):2,("3FRAG","chen"):1,("3FRAG","foremost"):0,("3FRAG","scalpel"):0,("3FRAG","photorec"):0,
+}
+for key, want in T4A.items():
+    check("T4a %-7s %-9s" % key, t4a[key]["rec"], want)
+
+print("=" * 70)
+print("TABLE 5  (C2 by gap)  -- rows printed in the paper")
+print("=" * 70)
+C2GAP = {"C2-BIFRAG-gap1": "1", "C2-BIFRAG-gap8": "8", "C2-BIFRAG-gap64": "64",
+         "C2-BIFRAG-gap512": "512", "C2-CONTROL-64MB": "control"}
+a2 = agg(lambda i: i in C2GAP, lambda i: C2GAP.get(i))
+T5 = {
+ ("1","scar"):(18,0,9,3,0,90),("1","cohen"):(9,7,473,470,138,45),("1","chen"):(9,5,221,39,0,45),
+ ("1","foremost"):(1,4,5,0,0,5),("1","scalpel"):(1,3,54,0,492,5),("1","photorec"):(1,4,15,0,0,5),
+ ("8","scar"):(18,0,9,3,0,90),("8","cohen"):(9,6,377,495,209,45),("8","chen"):(9,5,220,40,0,45),
+ ("64","scar"):(18,0,10,3,0,90),("64","cohen"):(10,6,357,500,227,50),("64","chen"):(9,4,217,40,0,45),
+ ("512","scar"):(17,0,9,6,1,85),("512","cohen"):(8,5,238,511,318,40),("512","chen"):(9,0,207,40,0,45),
+ ("control","scar"):(19,0,12,2,0,95),("control","cohen"):(18,0,795,142,106,90),("control","chen"):(19,0,223,29,0,95),
+}
+for (gap, tool), want in T5.items():
+    d = a2[(gap, tool)]
+    got = (d["Faithful"], d["Partial"], d["Duplicate"], d["False_accept"],
+           d["Junk"], recall(d["Faithful"], d["GT_docs"]))
+    check("T5 gap %-8s %-9s" % (gap, tool), got, want)
+
+print("=" * 70)
+print("TABLE 6  (C2 repair ablation)")
+print("=" * 70)
+abl = {r["Gap"]: r for r in csv.DictReader(open(EV + r"\c2_repair_ablation.csv"))}
+T6 = {"gap1": (16, 18, 2), "gap8": (16, 18, 2), "gap64": (16, 18, 2),
+      "gap512": (16, 17, 1), "control": (19, 19, 0)}
+for gap, want in T6.items():
+    r = abl[gap]
+    got = (int(r["Faithful_OFF"]), int(r["Faithful_ON"]), int(r["C2_gain"]))
+    check("T6 %-8s (off,on,gain)" % gap, got, want)
+
+print("=" * 70)
+print("TABLE 7  (SYN-24 breadth, recall %)")
+print("=" * 70)
+def synscen(i):
+    m = re.match(r"^SYN-([A-Z]+)-", i)
+    return m.group(1) if m else None
+a7 = agg(lambda i: i.startswith("SYN-"), synscen)
+T7 = {
+ ("CONT","scar"):100,("CONT","cohen"):35,("CONT","chen"):100,("CONT","foremost"):100,("CONT","scalpel"):52.5,("CONT","photorec"):100,
+ ("SEQF","scar"):41.2,("SEQF","cohen"):7.5,("SEQF","chen"):2.5,("SEQF","foremost"):2.5,("SEQF","scalpel"):2.5,("SEQF","photorec"):2.5,
+ ("NSQF","scar"):42.5,("NSQF","cohen"):2.5,("NSQF","chen"):0,("NSQF","foremost"):0,("NSQF","scalpel"):0,("NSQF","photorec"):0,
+ ("MISS","scar"):0,("MISS","cohen"):0,("MISS","chen"):0,("MISS","foremost"):0,("MISS","scalpel"):0,("MISS","photorec"):0,
+ ("NEST","scar"):50,("NEST","cohen"):0,("NEST","chen"):40,("NEST","foremost"):0,("NEST","scalpel"):30,("NEST","photorec"):0,
+ ("BRAID","scar"):5,("BRAID","cohen"):0,("BRAID","chen"):0,("BRAID","foremost"):0,("BRAID","scalpel"):0,("BRAID","photorec"):0,
+}
+for (scen, tool), want in T7.items():
+    d = a7[(scen, tool)]
+    check("T7 %-6s %-9s recall" % (scen, tool), recall(d["Faithful"], d["GT_docs"]), want)
+
+print("=" * 70)
+print("TABLE 8  (depth, target Linearized.pdf recovered/5)")
+print("=" * 70)
+dep = defaultdict(lambda: defaultdict(lambda: [0, 0]))
+for r in perdoc:
+    m = re.match(r"^(SEQF|NSQF|MISS|NEST|BRAID)_f(\d+)$", r["Image"])
+    if not m or r["Document"] != "Linearized.pdf":
+        continue
+    N = int(m.group(2))
+    dep[N][r["Tool"]][0] += int(r["Recovered"])
+    dep[N][r["Tool"]][1] += 1
+# paper claims: N2-4 scar 4/5 others 0/5 ; N5-20 all 0/5
+for N in range(2, 21):
+    for tool in TOOLS:
+        rec, tot = dep[N][tool]
+        want = (4 if (tool == "scar" and N <= 4) else 0, 5)
+        check("T8 N=%-2d %-9s" % (N, tool), (rec, tot), want)
+
+print("=" * 70)
+print("TABLE 9  (NIST L0-L5, faithful/2)")
+print("=" * 70)
+a9 = agg(lambda i: re.match(r"^L\d_Documents$", i), lambda i: i.replace("_Documents", ""))
+T9 = {  # faithful count per (level,tool)
+ ("L0","scar"):2,("L0","cohen"):2,("L0","chen"):2,("L0","foremost"):2,("L0","scalpel"):0,("L0","photorec"):2,
+ ("L1","scar"):2,("L1","cohen"):2,("L1","chen"):2,("L1","foremost"):2,("L1","scalpel"):0,("L1","photorec"):2,
+ ("L2","scar"):2,("L2","cohen"):2,("L2","chen"):0,("L2","foremost"):0,("L2","scalpel"):0,("L2","photorec"):0,
+ ("L3","scar"):0,("L3","cohen"):0,("L3","chen"):0,("L3","foremost"):0,("L3","scalpel"):0,("L3","photorec"):0,
+ ("L4","scar"):2,("L4","cohen"):2,("L4","chen"):2,("L4","foremost"):1,("L4","scalpel"):0,("L4","photorec"):2,
+ ("L5","scar"):0,("L5","cohen"):0,("L5","chen"):0,("L5","foremost"):0,("L5","scalpel"):0,("L5","photorec"):0,
+}
+for (lvl, tool), want in T9.items():
+    check("T9 %-3s %-9s faithful" % (lvl, tool), a9[(lvl, tool)]["Faithful"], want)
+
+print("=" * 70)
+print("TABLE 10 (DFRWS, MD5-exact/13)")
+print("=" * 70)
+T10 = {"scar": (5, 6, 0), "cohen": (6, 11, 7), "chen": (1, 4, 0),
+       "foremost": (1, 0, 0), "scalpel": (0, 0, 24), "photorec": (1, 0, 0)}
+for r in scored:
+    if r["Image"] != "dfrws-2007-challenge":
+        continue
+    want = T10[r["Tool"]]
+    got = (r["Faithful"], r["False_accept"], r["Junk"])
+    check("T10 %-9s (md5,fa,junk)" % r["Tool"], got, want)
+
+print("=" * 70)
+print("TABLE 11 (McNemar SCAR vs Cohen)")
+print("=" * 70)
+mc = {r["Corpus"]: r for r in csv.DictReader(open(EV + r"\mcnemar_results.csv"))
+      if r["Comparison"] == "scar_vs_cohen"}
+T11 = {  # (N, scar_rec, cohen_rec, b, c)
+ "C1": (90, 73, 29, 44, 0), "C2": (100, 90, 54, 40, 4),
+ "SYN-24": (480, 191, 36, 155, 0), "95-set": (133, 50, 0, 50, 0),
+ "L-series": (12, 8, 8, 0, 0), "DFRWS": (13, 5, 6, 0, 1),
+}
+for corpus, want in T11.items():
+    r = mc[corpus]
+    got = (int(r["N"]), int(r["SCAR_recovered"]), int(r["Base_recovered"]),
+           int(r["b_scar_only"]), int(r["c_base_only"]))
+    check("T11 %-9s (N,scar,cohen,b,c)" % corpus, got, want)
+
+print("=" * 70)
+print("TOTAL FAILURES:", _fail[0])
+print("=" * 70)

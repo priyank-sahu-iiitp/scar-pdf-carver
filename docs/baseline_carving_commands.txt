@@ -1,0 +1,94 @@
+SCAR evaluation — baseline carving tool commands (for reviewer verification)
+============================================================================
+
+This file documents the EXACT commands used to run the three signature-based
+baseline carvers (foremost, scalpel, photorec) against every disk image in
+SCAR/dataset/. These are unmodified, stock forensic tools — no SCAR code is
+involved in this step. Results were written to:
+
+  SCAR/results/full_carved_output/<image_name>/<tool>/
+
+matching the same directory layout used for the other baselines (chen,
+cohen) and for SCAR itself (scar), so all six carvers can be compared
+side-by-side per image.
+
+----------------------------------------------------------------------------
+Environment
+----------------------------------------------------------------------------
+- Tools run inside WSL (Windows Subsystem for Linux), invoked from Windows
+  PowerShell via `wsl.exe -- bash <script>.sh`.
+- Windows paths are translated to WSL mount paths before use, e.g.
+    <repo>\dataset\BRAID_f02.img
+    -> /path/to/repo/dataset/BRAID_f02.img
+- Tool versions in use:
+    foremost  1.5.7
+    scalpel   1.60   (config: /etc/scalpel/scalpel.conf, pdf rule enabled)
+    photorec  7.1
+
+----------------------------------------------------------------------------
+1) foremost — one pass, PDF signatures only
+----------------------------------------------------------------------------
+  foremost -t pdf -i "<image>" -o "<out_dir>/foremost" -q
+
+  -t pdf    restrict carving to PDF file signatures
+  -i        input raw disk image
+  -o        output directory (created fresh per image; must not pre-exist)
+  -q        quiet mode (suppresses foremost's own progress banner)
+
+Output: <out_dir>/foremost/pdf/*.pdf  (+ foremost's audit.txt)
+
+----------------------------------------------------------------------------
+2) scalpel — one pass, using the stock /etc/scalpel/scalpel.conf
+----------------------------------------------------------------------------
+  scalpel -c /etc/scalpel/scalpel.conf -o "<out_dir>/scalpel" "<image>"
+
+  -c        config file (only the pdf header/footer rule is enabled)
+  -o        output directory (scalpel creates it; must not pre-exist)
+
+Output: <out_dir>/scalpel/pdf-1-0/*.pdf  (+ scalpel's audit.txt)
+
+----------------------------------------------------------------------------
+3) photorec — TWO passes per image (default, then paranoid), matching the
+   paper's evaluation methodology
+----------------------------------------------------------------------------
+  Pass 1 (default options, PDF file family only):
+    photorec /log /d "<out_dir>/photorec/recup_dir" /cmd "<image>" \
+        partition_none,fileopt,everything,disable,pdf,enable,search
+
+  Pass 2 (paranoid mode, separate output tree so pass 1 isn't overwritten):
+    photorec /log /d "<out_dir>/photorec/recup_dir2" /cmd "<image>" \
+        partition_none,fileopt,everything,disable,pdf,enable,options,paranoid,search
+
+  partition_none      raw image, no partition table to parse
+  fileopt,everything,disable   turn off every file-type signature first
+  pdf,enable          then re-enable only the pdf signature
+  options,paranoid    (pass 2 only) stricter header/footer validation,
+                      catches fewer false positives at the cost of some
+                      true recoveries — run as a second, separate pass
+                      rather than replacing pass 1
+
+Output: <out_dir>/photorec/recup_dir.1/*.pdf, recup_dir2.1/*.pdf (PhotoRec
+appends ".1", ".2", ... per invocation), plus photorec's own report.xml/log.
+
+----------------------------------------------------------------------------
+Per-image driver logic (what actually ran)
+----------------------------------------------------------------------------
+For each of the 134 images in SCAR/dataset/:
+  1. Create SCAR/results/full_carved_output/<image_name>/
+  2. Run foremost  -> .../foremost/   (timeout 600s)
+  3. Run scalpel   -> .../scalpel/    (timeout 600s)
+  4. Run photorec  -> .../photorec/   (two internal passes, 600s each,
+                                       one wsl.exe invocation)
+  Each run's combined stdout+stderr is saved to <tool>.log next to its
+  output folder for audit purposes.
+
+Equivalent standalone scripts (same commands, runnable directly) are in
+this folder: run_foremost.sh, run_scalpel.sh, run_photorec.sh.
+
+----------------------------------------------------------------------------
+Not covered by this file
+----------------------------------------------------------------------------
+The other two baselines in the comparison tree — Cohen's original 2007
+reference carver ("cohen") and the Chen-2008 cascade ("chen") — are run
+separately and documented separately; they are not stock OS tools and use
+their own Python-based CLIs, not WSL.
