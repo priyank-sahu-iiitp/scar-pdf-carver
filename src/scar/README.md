@@ -105,4 +105,6 @@ The console prints a summary: the graded verdict counts
 
 ## License
 
-Released under the MIT License — see [LICENSE](LICENSE).
+Released under the **GPL-2.0-or-later** — see [LICENSE](../../LICENSE).
+Derived from M. I. Cohen's DFRWS 2007 submission; see
+[ATTRIBUTION.md](../../ATTRIBUTION.md) for full provenance.

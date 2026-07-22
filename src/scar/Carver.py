@@ -1,3 +1,20 @@
+# Derived from Michael I. Cohen's DFRWS 2007 Forensic Challenge submission
+# ("Advanced carving techniques", Digital Investigation 4(3-4):119-128, 2007).
+#
+#   Original work Copyright 2004  Commonwealth of Australia
+#   Original work Copyright 2006  Michael I. Cohen
+#   Modifications  Copyright 2026  Priyank Kumar Sahu
+#
+# This file has been changed from the original: ported from Python 2 to Python 3, and extended with the SCAR
+# contributions (C1 cross-reference-stream decoding, C2 anchored bi-fragment
+# repair) and engineering elements E1-E6.
+#
+# This program is free software; you can redistribute it and/or modify it
+# under the terms of the GNU General Public License as published by the Free
+# Software Foundation; either version 2 of the License, or (at your option)
+# any later version. See the LICENSE file at the repository root, and
+# ATTRIBUTION.md for full provenance.
+
 import bisect
 
 
