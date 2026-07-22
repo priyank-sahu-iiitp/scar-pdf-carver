@@ -6,12 +6,14 @@
 *.raw
 *.iso
 *.bin
-dataset/
+/dataset/
 
 # Carved output tree (6 tools x 134 images). Rebuilt by running the carvers.
-# The *scored* results are committed under eval/results/ instead.
-results/
-full_carved_output/
+# The *scored* results ARE committed, under eval/results/ — so these patterns
+# are anchored with a leading slash. A bare "results/" would match at ANY depth
+# and would silently exclude eval/results/ too.
+/results/
+/full_carved_output/
 
 # ─── Python ────────────────────────────────────────────────────────────────
 __pycache__/

@@ -40,8 +40,7 @@ scar-pdf-carver/
 │   ├── *.py             Scoring + statistics scripts
 │   └── results/         Pre-computed result tables (verify the paper's numbers here)
 └── docs/
-    ├── baseline_carving_commands.txt   Exact foremost/scalpel/photorec commands
-    └── provenance/      Frozen record of every script used to compute the paper
+    └── baseline_carving_commands.txt   Exact foremost/scalpel/photorec commands
 ```
 
 Two corpora are **not** shipped as files and are rebuilt/downloaded instead:
@@ -219,9 +218,8 @@ py eval/groundtruth.py \
 | `eval/groundtruth.py` | `--carved-dir --src [--manifest] --out` | three-tier content match for one folder |
 
 Pre-computed outputs of all of the above are in `eval/results/`, so the paper's
-numbers can be checked without a full re-run; `docs/provenance/` freezes the
-exact scripts used to compute every reported cell. Run any script with `--help`
-for its full option list.
+numbers can be checked without a full re-run. Run any script with `--help` for
+its full option list.
 
 ---
 
