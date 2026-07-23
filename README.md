@@ -252,3 +252,4 @@ The planted PDFs in `ground_truth/` are the author's own Microsoft Word
 documents, freely-licensed Overleaf templates, and files from the
 research-redistributable GovDocs/Digital Corpora collection (Garfinkel et al.,
 2009).
+"# scar-pdf-carver" 
