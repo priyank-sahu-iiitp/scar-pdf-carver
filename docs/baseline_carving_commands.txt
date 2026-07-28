@@ -22,7 +22,9 @@ Environment
     -> /path/to/repo/dataset/BRAID_f02.img
 - Tool versions in use:
     foremost  1.5.7
-    scalpel   1.60   (config: /etc/scalpel/scalpel.conf, pdf rule enabled)
+    scalpel   1.60    (package scalpel 1.60+git20240110.6960eb2-1build1 -- a 2024
+                       build, NOT the 2005 1.60 release; the binary still prints
+                       "1.60") -- config: /etc/scalpel/scalpel.conf, pdf rule enabled
     photorec  7.1
 
 ----------------------------------------------------------------------------
