@@ -124,7 +124,9 @@ def main() -> int:
 
         for i, (start, end) in enumerate(regions):
             raw = bytes(mm[start:end])
-            res = run_all_algorithms(raw)
+            # Section IV.B searches the whole image for the objects of later
+            # fragments, so the cascade also gets the image and the region offset.
+            res = run_all_algorithms(raw, image=mm, start=start)
             pc = res["A5_PC"]
 
             saved = ""
@@ -134,9 +136,7 @@ def main() -> int:
                 saved = out_path.name
 
             note = pc.notes.split(";")[0][:60]
-            alg = "HFV" if "cascade=HFV" in pc.notes else (
-                "ISV" if "cascade=ISV" in pc.notes else "FAIL"
-            )
+            alg = pc.notes.split(";")[0].replace("cascade=", "")[:12] or "FAIL"
             print(f"{i:>3}  {start:>12}  {(end - start):>10}  "
                   f"{(pc.page_count or 0):>5}  {pc.n_objects:>5}  "
                   f"{alg:<6}  {note}")

@@ -1,13 +1,13 @@
 Encoding,Tool,Recovered,Total,Recall_pct
 classic table (Cohen-readable),scar,18,27,66.7
 classic table (Cohen-readable),cohen,15,27,55.6
-classic table (Cohen-readable),chen,11,27,40.7
+classic table (Cohen-readable),chen,14,27,51.9
 classic table (Cohen-readable),foremost,9,27,33.3
 classic table (Cohen-readable),scalpel,0,27,0.0
 classic table (Cohen-readable),photorec,9,27,33.3
 hybrid (Cohen-readable),scar,24,24,100.0
 hybrid (Cohen-readable),cohen,14,24,58.3
-hybrid (Cohen-readable),chen,15,24,62.5
+hybrid (Cohen-readable),chen,18,24,75.0
 hybrid (Cohen-readable),foremost,12,24,50.0
 hybrid (Cohen-readable),scalpel,10,24,41.7
 hybrid (Cohen-readable),photorec,12,24,50.0

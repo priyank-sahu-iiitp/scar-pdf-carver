@@ -160,6 +160,8 @@ py eval/score_corpus.py \
     --out eval/results/scored_results_render_hash.csv
 ```
 
+Scores were computed on Windows with the default text encoding. Under UTF-8 (e.g. Linux), one file in BRAID_f14 renders instead of failing, so PhotoRec on that image scores Junk 4, FA 4 rather than Junk 8, FA 0. No figure in the paper changes.
+
 ### Step 4 — Contribution tables and paired statistics
 
 ```bash
