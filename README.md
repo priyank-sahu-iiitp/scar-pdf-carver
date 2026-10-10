@@ -237,16 +237,16 @@ These mechanisms support chain of custody; they do not by themselves constitute
 it.
 
 ---
-
 ## License and attribution
 
-**GPL-2.0-or-later** — see [LICENSE](LICENSE).
+**GPL-2.0-only** — see [LICENSE](LICENSE).
 
 Both `src/scar/` and `src/cohen/` derive from Michael I. Cohen's DFRWS 2007
 Forensic Challenge submission ("Advanced carving techniques", *Digital
 Investigation* 4(3–4):119–128, 2007), which is distributed under the GNU
-General Public License v2 or later. This repository is therefore licensed under
-the same terms, and our own additions are contributed under them too. Full
+General Public License v2 or later. Exercising the option allowed by that 
+upstream license, this repository and our own additions are distributed strictly 
+under the terms of the **GNU General Public License v2.0 only**. Full 
 provenance — what was derived, what was changed, and the original copyright
 notices — is recorded in [ATTRIBUTION.md](ATTRIBUTION.md).
 
@@ -254,4 +254,3 @@ The planted PDFs in `ground_truth/` are the author's own Microsoft Word
 documents, freely-licensed Overleaf templates, and files from the
 research-redistributable GovDocs/Digital Corpora collection (Garfinkel et al.,
 2009).
-"# scar-pdf-carver" 
