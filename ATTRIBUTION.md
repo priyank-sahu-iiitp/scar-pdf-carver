@@ -32,9 +32,10 @@ Copyright 2006: Michael Cohen
 ```
 
 That code is distributed under the **GNU General Public License, version 2 or
-later**. Exercising the option allowed under Section 9 of that upstream license, 
-this derivative repository and our own additions are distributed strictly under 
-the terms of the **GNU General Public License v2.0 only** (see [LICENSE](LICENSE)).
+later**. Accordingly, this repository as a whole is licensed **GPL-2.0-or-later**
+(see [LICENSE](LICENSE)), and our own additions are contributed under the same
+terms.
+
 
 > **Note on the derived files.** In the original distribution the GPL v2 header
 > appears on sibling files of the same package (e.g. `BasicFormats.py`,
